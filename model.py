@@ -13,6 +13,7 @@ SOS_token = 2
 EOS_token = 3
 MAX_LENGTH = 50
 
+device = torch.device('cuda:2')
 
 class Encoder(nn.Module):
     def __init__(self, input_size, embed_size, hidden_size,
@@ -61,6 +62,7 @@ class Attention(nn.Module):
 
 class Decoder(nn.Module):
     def __init__(self, embed_size, hidden_size, output_size,
+                 user_size,
                  n_layers=1, dropout=0.2):
         super(Decoder, self).__init__()
         self.embed_size = embed_size  # 256
@@ -68,14 +70,20 @@ class Decoder(nn.Module):
         self.output_size = output_size  # 10004
         self.n_layers = n_layers  # 1
 
+        self.user_size = user_size
+        self.user_embed = nn.Embedding(user_size, embed_size)
+
         self.embed = nn.Embedding(output_size, embed_size)
         self.dropout = nn.Dropout(dropout, inplace=True)
         self.attention = Attention(hidden_size)
-        self.gru = nn.GRU(hidden_size + embed_size, hidden_size,
+        self.gru = nn.GRU(hidden_size + embed_size + embed_size, hidden_size,
                           n_layers, dropout=dropout)
         self.out = nn.Linear(hidden_size * 2, output_size)
 
-    def forward(self, input, last_hidden, encoder_outputs):  # 上一步的 output,上一步的 hidden_state
+    def forward(self, input, last_hidden, user, encoder_outputs):  # output, hidden_state
+
+        embedded_user = self.user_embed(user).unsqueeze(0)
+
         # Get the embedding of the current input word (last output word)
         embedded = self.embed(input).unsqueeze(0)  # (1,B,N) # [32]=>[32, 256]=>[1, 32, 256]
         embedded = self.dropout(embedded)
@@ -83,8 +91,9 @@ class Decoder(nn.Module):
         attn_weights = self.attention(last_hidden[-1], encoder_outputs)  # [32, 512][27, 32, 512]=>[32, 1, 27]
         context = attn_weights.bmm(encoder_outputs.transpose(0, 1))  # (B,1,N) # [32, 1, 27]bmm[32, 27, 512]=>[32,1,512]
         context = context.transpose(0, 1)  # (1,B,N) # [32, 1, 512]=>[1, 32, 512]
+
         # Combine embedded input word and attended context, run through RNN
-        rnn_input = torch.cat([embedded, context], 2)  # [1, 32, 256] cat [1, 32, 512]=> [1, 32, 768]
+        rnn_input = torch.cat([embedded, context, embedded_user], 2)  # [1, 32, 256] cat [1, 32, 512]=> [1, 32, 768]
         output, hidden = self.gru(rnn_input, last_hidden)  # in:[1, 32, 768],[1, 32, 512]=>[1, 32, 512],[1, 32, 512]
         output = output.squeeze(0)  # (1,B,N) -> (B,N)
         context = context.squeeze(0)
@@ -99,33 +108,33 @@ class Seq2Seq(nn.Module):
         self.encoder = encoder
         self.decoder = decoder
 
-    def forward(self, src, trg, teacher_forcing_ratio=0.5):
+    def forward(self, src, trg, user, teacher_forcing_ratio=0.5):
         batch_size = src.size(1)
         max_len = trg.size(0)
         vocab_size = self.decoder.output_size
-        outputs = Variable(torch.zeros(max_len, batch_size, vocab_size)).cuda()
+        outputs = Variable(torch.zeros(max_len, batch_size, vocab_size)).to(device)
 
         encoder_output, hidden = self.encoder(src)  # [27, 32]=> =>[27, 32, 512],[4, 32, 512]
         hidden = hidden[:self.decoder.n_layers]  # [4, 32, 512][1, 32, 512]
         output = Variable(trg.data[0, :])  # sos
         for t in range(1, max_len):
             output, hidden, attn_weights = self.decoder(
-                output, hidden, encoder_output)  # output:[32, 10004] [1, 32, 512] [32, 1, 27]
+                output, hidden, user, encoder_output)  # output:[32, 10004] [1, 32, 512] [32, 1, 27]
             outputs[t] = output
             is_teacher = random.random() < teacher_forcing_ratio
-            top1 = output.data.max(1)[1]  # 按照 dim=1 求解最大值和最大值索引,x[1] 得到的是最大值的索引=>top1.shape=32
-            output = Variable(trg.data[t] if is_teacher else top1).cuda()
+            top1 = output.data.max(1)[1]  # dim=1 ,x[1] =>top1.shape=32
+            output = Variable(trg.data[t] if is_teacher else top1).to(device)
         return outputs
 
-    def decode(self, src, trg, method='beam-search'):
+    def decode(self, src, trg, user, method='beam-search'):
         encoder_output, hidden = self.encoder(src)  # [27, 32]=> =>[27, 32, 512],[4, 32, 512]
         hidden = hidden[:self.decoder.n_layers]  # [4, 32, 512][1, 32, 512]
         if method == 'beam-search':
-            return self.beam_decode(trg, hidden, encoder_output)
+            return self.beam_decode(trg, hidden, user, encoder_output)
         else:
-            return self.greedy_decode(trg, hidden, encoder_output)
+            return self.greedy_decode(trg, hidden, user, encoder_output)
 
-    def greedy_decode(self, trg, decoder_hidden, encoder_outputs, ):
+    def greedy_decode(self, trg, decoder_hidden, user, encoder_outputs, ):
         '''
         :param target_tensor: target indexes tensor of shape [B, T] where B is the batch size and T is the maximum length of the output sentence
         :param decoder_hidden: input tensor of shape [1, B, H] for start of the decoding
@@ -134,11 +143,10 @@ class Seq2Seq(nn.Module):
         '''
         seq_len, batch_size = trg.size()
         decoded_batch = torch.zeros((batch_size, seq_len))
-        # decoder_input = torch.LongTensor([[EN.vocab.stoi['<sos>']] for _ in range(batch_size)]).cuda()
-        decoder_input = Variable(trg.data[0, :]).cuda()  # sos
-        print(decoder_input.shape)
+        # decoder_input = torch.LongTensor([[EN.vocab.stoi['<sos>']] for _ in range(batch_size)]).to(device)
+        decoder_input = Variable(trg.data[0, :]).to(device)  # sos
         for t in range(seq_len):
-            decoder_output, decoder_hidden, _ = self.decoder(decoder_input, decoder_hidden, encoder_outputs)
+            decoder_output, decoder_hidden, _ = self.decoder(decoder_input, decoder_hidden, user, encoder_outputs)
 
             topv, topi = decoder_output.data.topk(1)  # [32, 10004] get candidates
             topi = topi.view(-1)
@@ -149,7 +157,7 @@ class Seq2Seq(nn.Module):
         return decoded_batch
 
     @timeit
-    def beam_decode(self, target_tensor, decoder_hiddens, encoder_outputs=None):
+    def beam_decode(self, target_tensor, decoder_hiddens, user, encoder_outputs=None):
         '''
         :param target_tensor: target indexes tensor of shape [B, T] where B is the batch size and T is the maximum length of the output sentence
         :param decoder_hiddens: input tensor of shape [1, B, H] for start of the decoding
@@ -168,10 +176,11 @@ class Seq2Seq(nn.Module):
                     decoder_hiddens[0][:, idx, :].unsqueeze(0), decoder_hiddens[1][:, idx, :].unsqueeze(0))
             else:
                 decoder_hidden = decoder_hiddens[:, idx, :].unsqueeze(0)  # [1, B, H]=>[1,H]=>[1,1,H]
+            decoder_user = user[idx].unsqueeze(0) # BAD added
             encoder_output = encoder_outputs[:, idx, :].unsqueeze(1)  # [T,B,H]=>[T,H]=>[T,1,H]
 
             # Start with the start of the sentence token
-            decoder_input = torch.LongTensor([SOS_token]).cuda()
+            decoder_input = torch.LongTensor([SOS_token]).to(device)
 
             # Number of sentence to generate
             endnodes = []
@@ -205,7 +214,8 @@ class Seq2Seq(nn.Module):
                         continue
 
                 # decode for one step using decoder
-                decoder_output, decoder_hidden, _ = self.decoder(decoder_input, decoder_hidden, encoder_output)
+                # call to decoder.forward(self, input, last_hidden, user, encoder_outputs):  # output, hidden_state
+                decoder_output, decoder_hidden, _ = self.decoder(decoder_input, decoder_hidden, decoder_user, encoder_output)
 
                 # PUT HERE REAL BEAM SEARCH OF TOP
                 log_prob, indexes = torch.topk(decoder_output, beam_width)
@@ -266,10 +276,10 @@ class BeamSearchNode(object):
         reward = 0
         # Add here a function for shaping a reward
 
-        return self.logp / float(self.leng - 1 + 1e-6) + alpha * reward  # 注意这里是有惩罚参数的，参考恩达的 beam-search
+        return self.logp / float(self.leng - 1 + 1e-6) + alpha * reward
 
     def __lt__(self, other):
-        return self.leng < other.leng  # 这里展示分数相同的时候怎么处理冲突，具体使用什么指标，根据具体情况讨论
+        return self.leng < other.leng
 
     def __gt__(self, other):
         return self.leng > other.leng
