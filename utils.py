@@ -20,7 +20,9 @@ def load_dataset(batch_size):
 
     USER = Field(sequential=False, use_vocab=True) 
 
-    fields = {'user': ('user', USER), 'revision_text': ('trg', EN), 'parent_text': ('src', DE)}
+    LINE_ID = Field(sequential=False, use_vocab=False) 
+
+    fields = {'user': ('user', USER), 'revision_text': ('trg', EN), 'parent_text': ('src', DE), 'line_id': ('lid', LINE_ID)}
 
     train, val, test = TabularDataset.splits(
                 path='data',
@@ -35,6 +37,8 @@ def load_dataset(batch_size):
     EN.build_vocab(train.trg, max_size=10000)
     USER.build_vocab(train.user, max_size=50000)
     train_iter, val_iter, test_iter = BucketIterator.splits(
-            (train, val, test), batch_size=batch_size, repeat=False)
+            (train, val, test), batch_size=batch_size, repeat=False,
+            shuffle=False
+            )
     return train_iter, val_iter, test_iter, DE, EN, USER
 
