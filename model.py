@@ -17,18 +17,25 @@ device = torch.device('cuda:2')
 
 class Encoder(nn.Module):
     def __init__(self, input_size, embed_size, hidden_size,
+                 ed_size,
+                 ed_embed_size,
                  n_layers=1, dropout=0.5):
         super(Encoder, self).__init__()
         self.input_size = input_size  # 8014
         self.hidden_size = hidden_size  # 512
         self.embed_size = embed_size  # 256
+        self.ed_size = ed_size
+        self.ed_embed_size = ed_embed_size
+        self.ed_embed = nn.Embedding(ed_size, ed_embed_size)
         self.embed = nn.Embedding(input_size, embed_size)
-        self.gru = nn.GRU(embed_size, hidden_size, n_layers,
+        self.gru = nn.GRU(embed_size + ed_embed_size, hidden_size, n_layers,
                           dropout=dropout, bidirectional=True)
 
-    def forward(self, src, hidden=None):
+    def forward(self, src, ed, hidden=None):
         embedded = self.embed(src)  # [max_len, batch_size]
-        outputs, hidden = self.gru(embedded, hidden)  # ([27, 32, 256],None)=>([27, 32, 1024],[4, 32, 512])
+        ed_embedded = self.ed_embed(ed)
+        full_embedded = torch.cat([embedded, ed_embedded], 2)
+        outputs, hidden = self.gru(full_embedded, hidden)  # ([27, 32, 256],None)=>([27, 32, 1024],[4, 32, 512])
         # sum bidirectional outputs
         outputs = (outputs[:, :, :self.hidden_size] +
                    outputs[:, :, self.hidden_size:])  # =>[27, 32, 512] + [27, 32, 512]
@@ -108,13 +115,13 @@ class Seq2Seq(nn.Module):
         self.encoder = encoder
         self.decoder = decoder
 
-    def forward(self, src, trg, user, teacher_forcing_ratio=0.5):
+    def forward(self, src, trg, user, ed, teacher_forcing_ratio=0.5):
         batch_size = src.size(1)
         max_len = trg.size(0)
         vocab_size = self.decoder.output_size
         outputs = Variable(torch.zeros(max_len, batch_size, vocab_size)).to(device)
 
-        encoder_output, hidden = self.encoder(src)  # [27, 32]=> =>[27, 32, 512],[4, 32, 512]
+        encoder_output, hidden = self.encoder(src, ed)  # [27, 32]=> =>[27, 32, 512],[4, 32, 512]
         hidden = hidden[:self.decoder.n_layers]  # [4, 32, 512][1, 32, 512]
         output = Variable(trg.data[0, :])  # sos
         for t in range(1, max_len):
@@ -126,8 +133,8 @@ class Seq2Seq(nn.Module):
             output = Variable(trg.data[t] if is_teacher else top1).to(device)
         return outputs
 
-    def decode(self, src, trg, user, method='beam-search'):
-        encoder_output, hidden = self.encoder(src)  # [27, 32]=> =>[27, 32, 512],[4, 32, 512]
+    def decode(self, src, trg, user, ed, method='beam-search'):
+        encoder_output, hidden = self.encoder(src, ed)  # [27, 32]=> =>[27, 32, 512],[4, 32, 512]
         hidden = hidden[:self.decoder.n_layers]  # [4, 32, 512][1, 32, 512]
         if method == 'beam-search':
             return self.beam_decode(trg, hidden, user, encoder_output)

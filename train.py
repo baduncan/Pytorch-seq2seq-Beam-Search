@@ -34,14 +34,16 @@ def evaluate(model, val_iter, vocab_size, DE, EN, USER):
             src, len_src = batch.src
             trg, len_trg = batch.trg
             user = batch.user
+            ed, len_ed = batch.ed
             src = Variable(src.data.to(device))
             trg = Variable(trg.data.to(device))
+            ed = Variable(ed.data.to(device))
             user = Variable(user.data.to(device))
-            output = model(src, trg, user, teacher_forcing_ratio=0.0)
+            output = model(src, trg, user, ed, teacher_forcing_ratio=0.0)
             loss = F.nll_loss(output[1:].view(-1, vocab_size),
                               trg[1:].contiguous().view(-1),
                               ignore_index=pad)
-            decoded_batch = model.decode(src, trg, user, method='beam-search')
+            decoded_batch = model.decode(src, trg, user, ed, method='beam-search')
             decoded_batch_list.append(decoded_batch)
             total_loss += loss.data.item()
 
@@ -53,17 +55,32 @@ def evaluate(model, val_iter, vocab_size, DE, EN, USER):
     return total_loss / (b + 1)
 
 
-def train(e, model, optimizer, train_iter, vocab_size, grad_clip, DE, EN, USER):
+def train(e, model, optimizer, train_iter, vocab_size, grad_clip, DE, EN, USER, ED):
     model.train()
     total_loss = 0
     pad = EN.vocab.stoi['<pad>']
     for b, batch in enumerate(train_iter):
         src, len_src = batch.src
         trg, len_trg = batch.trg
+        ed, len_ed = batch.ed
+
+        # print('ed : ' + str(len_ed))
+        # print('src: ' + str(len_src))
+        
+        # decode_src_arr = [DE.vocab.itos[i] for i in src[:,3]]
+        # decode_trg_arr = [EN.vocab.itos[i] for i in trg[:,3]]
+        # decode_edit_arr = [ED.vocab.itos[i] for i in ed[:,3]]
+
+        # print('src: ' + '_'.join(decode_src_arr))
+        # print('trg: ' + '_'.join(decode_trg_arr))
+        # print('ed : ' + '_'.join(decode_edit_arr))
+
+        # exit()
+
         user = batch.user
-        src, trg, user = src.to(device), trg.to(device), user.to(device)
+        src, trg, user, ed = src.to(device), trg.to(device), user.to(device), ed.to(device)
         optimizer.zero_grad()
-        output = model(src, trg, user)
+        output = model(src, trg, user, ed)
         loss = F.nll_loss(output[1:].view(-1, vocab_size),
                           trg[1:].contiguous().view(-1),
                           ignore_index=pad)
@@ -83,18 +100,21 @@ def main():
     args = parse_arguments()
     hidden_size = 512
     embed_size = 256
+    ed_embed_size = 32
     assert torch.cuda.is_available()
 
     print("[!] preparing dataset...")
-    train_iter, val_iter, test_iter, DE, EN, USER = load_dataset(args.batch_size)
-    de_size, en_size, user_size = len(DE.vocab), len(EN.vocab), len(USER.vocab)
+    train_iter, val_iter, test_iter, DE, EN, USER, ED = load_dataset(args.batch_size)
+    de_size, en_size, user_size, ed_size = len(DE.vocab), len(EN.vocab), len(USER.vocab), len(ED.vocab)
     print("[TRAIN]:%d (dataset:%d)\t[TEST]:%d (dataset:%d)"
           % (len(train_iter), len(train_iter.dataset),
              len(test_iter), len(test_iter.dataset)))
-    print("[DE_vocab]:%d [en_vocab]:%d [num_users]:%d" % (de_size, en_size, user_size))
+    print("[DE_vocab]:%d [en_vocab]:%d [num_users]:%d [num_edit_types]:%d" % (de_size, en_size, user_size, ed_size))
 
     print("[!] Instantiating models...")
     encoder = Encoder(de_size, embed_size, hidden_size,
+                      ed_size,
+                      ed_embed_size,
                       n_layers=2, dropout=0.5)
     decoder = Decoder(embed_size, hidden_size, en_size,
                       user_size,
@@ -106,7 +126,7 @@ def main():
     best_val_loss = None
     for e in range(1, args.epochs + 1):
         train(e, seq2seq, optimizer, train_iter,
-              en_size, args.grad_clip, DE, EN, USER)
+              en_size, args.grad_clip, DE, EN, USER, ED)
         val_loss = evaluate(seq2seq, val_iter, en_size, DE, EN, USER)
         print("[Epoch:%d] val_loss:%5.3f | val_pp:%5.2f"
               % (e, val_loss, math.exp(val_loss)))

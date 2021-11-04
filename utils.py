@@ -7,28 +7,31 @@ def load_dataset(batch_size):
     spacy_en = spacy.load('en')
     url = re.compile('(<url>.*</url>)')
 
-    def tokenize_en(text):
-        return [tok.text for tok in spacy_en.tokenizer(url.sub('@URL@', text))]
+    #def tokenize_en(text):
+        #return [tok.text for tok in spacy_en.tokenizer(url.sub('@URL@', text.strip()))]
 
-    sentence = Field(sequential=True, use_vocab=True, tokenize=tokenize_en, lower=True)
+    def tokenize_ed(text):
+        return text.split()
 
     # DE is input
-    DE = Field(sequential=True, use_vocab=True, tokenize=tokenize_en, include_lengths=True, init_token='<sos>', eos_token='<eos>') 
+    DE = Field(sequential=True, use_vocab=True, tokenize=tokenize_ed, include_lengths=True, init_token='<sos>', eos_token='<eos>') 
 
     # EN is output
-    EN = Field(sequential=True, use_vocab=True, tokenize=tokenize_en, include_lengths=True, init_token='<sos>', eos_token='<eos>') 
+    EN = Field(sequential=True, use_vocab=True, tokenize=tokenize_ed, include_lengths=True, init_token='<sos>', eos_token='<eos>') 
 
     USER = Field(sequential=False, use_vocab=True) 
 
-    LINE_ID = Field(sequential=False, use_vocab=False) 
+    LID = Field(sequential=False, use_vocab=False) 
 
-    fields = {'user': ('user', USER), 'revision_text': ('trg', EN), 'parent_text': ('src', DE), 'line_id': ('lid', LINE_ID)}
+    ED = Field(sequential=True, use_vocab=True, tokenize=tokenize_ed, include_lengths=True, init_token='<sos>', eos_token='<eos>') 
+
+    fields = {'user': ('user', USER), 'revision_text': ('trg', EN), 'parent_text': ('src', DE), 'line_id': ('lid', LID), 'edit_string': ('ed', ED)}
 
     train, val, test = TabularDataset.splits(
                 path='data',
-                train='American_Philanthropists_norm_train.tsv',
-                test='American_Philanthropists_norm_test.tsv',
-                validation='American_Philanthropists_norm_val.tsv',
+                train='train_with_labels.tsv',
+                test='test_with_labels.tsv',
+                validation='val_with_labels.tsv',
                 format='tsv',
                 fields=fields
             )
@@ -36,9 +39,9 @@ def load_dataset(batch_size):
     DE.build_vocab(train.src, min_freq=2, max_size=10000)
     EN.build_vocab(train.trg, max_size=10000)
     USER.build_vocab(train.user, max_size=50000)
+    ED.build_vocab(train.ed)
     train_iter, val_iter, test_iter = BucketIterator.splits(
             (train, val, test), batch_size=batch_size, repeat=False,
             shuffle=False
             )
-    return train_iter, val_iter, test_iter, DE, EN, USER
-
+    return train_iter, val_iter, test_iter, DE, EN, USER, ED
