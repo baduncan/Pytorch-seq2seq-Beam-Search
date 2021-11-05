@@ -1,3 +1,4 @@
+import sys
 import os
 import math
 import argparse
@@ -6,7 +7,7 @@ from torch import optim
 from torch.autograd import Variable
 from torch.nn.utils import clip_grad_norm
 from torch.nn import functional as F
-from model import Encoder, Decoder, Seq2Seq, device
+from model import Encoder, Decoder_noUsers, Decoder_wUsers, Seq2Seq, device
 from utils import load_dataset
 
 
@@ -14,6 +15,8 @@ def parse_arguments():
     p = argparse.ArgumentParser(description='Hyperparams')
     p.add_argument('-epochs', type=int, default=20,
                    help='number of epochs for train')
+    p.add_argument('-noUsers', type=bool, default=False,
+                   help='True if running without user embeddings')
     p.add_argument('-batch_size', type=int, default=32,
                    help='number of epochs for train')
     p.add_argument('-lr', type=float, default=0.0001,
@@ -116,7 +119,12 @@ def main():
                       ed_size,
                       ed_embed_size,
                       n_layers=2, dropout=0.5)
-    decoder = Decoder(embed_size, hidden_size, en_size,
+    if args.noUsers:
+        decoder = Decoder_noUsers(embed_size, hidden_size, en_size,
+                      user_size,
+                      n_layers=1, dropout=0.0)
+    else:
+        decoder = Decoder_wUsers(embed_size, hidden_size, en_size,
                       user_size,
                       n_layers=1, dropout=0.0)
     seq2seq = Seq2Seq(encoder, decoder).to(device)

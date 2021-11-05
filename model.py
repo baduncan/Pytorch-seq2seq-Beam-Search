@@ -67,11 +67,46 @@ class Attention(nn.Module):
         return energy.squeeze(1)  # [B*T]
 
 
-class Decoder(nn.Module):
+class Decoder_noUsers(nn.Module):
+    def __init__(self, embed_size, hidden_size, output_size,
+                 user_size, # ignored
+                 n_layers=1, dropout=0.2):
+        super(Decoder_noUsers, self).__init__()
+        self.embed_size = embed_size  # 256
+        self.hidden_size = hidden_size  # 512
+        self.output_size = output_size  # 10004
+        self.n_layers = n_layers  # 1
+
+        self.embed = nn.Embedding(output_size, embed_size)
+        self.dropout = nn.Dropout(dropout, inplace=True)
+        self.attention = Attention(hidden_size)
+        self.gru = nn.GRU(hidden_size + embed_size, hidden_size,
+                          n_layers, dropout=dropout)
+        self.out = nn.Linear(hidden_size * 2, output_size)
+
+    def forward(self, input, last_hidden, user, encoder_outputs):  # output, hidden_state
+        # Get the embedding of the current input word (last output word)
+        embedded = self.embed(input).unsqueeze(0)  # (1,B,N) # [32]=>[32, 256]=>[1, 32, 256]
+        embedded = self.dropout(embedded)
+        # Calculate attention weights and apply to encoder outputs
+        attn_weights = self.attention(last_hidden[-1], encoder_outputs)  # [32, 512][27, 32, 512]=>[32, 1, 27]
+        context = attn_weights.bmm(encoder_outputs.transpose(0, 1))  # (B,1,N) # [32, 1, 27]bmm[32, 27, 512]=>[32,1,512]
+        context = context.transpose(0, 1)  # (1,B,N) # [32, 1, 512]=>[1, 32, 512]
+        # Combine embedded input word and attended context, run through RNN
+        rnn_input = torch.cat([embedded, context], 2)  # [1, 32, 256] cat [1, 32, 512]=> [1, 32, 768]
+        output, hidden = self.gru(rnn_input, last_hidden)  # in:[1, 32, 768],[1, 32, 512]=>[1, 32, 512],[1, 32, 512]
+        output = output.squeeze(0)  # (1,B,N) -> (B,N)
+        context = context.squeeze(0)
+        output = self.out(torch.cat([output, context], 1))  # [32, 512] cat [32, 512] => [32, 512*2]
+        output = F.log_softmax(output, dim=1)
+        return output, hidden, attn_weights  # [32, 10004] [1, 32, 512] [32, 1, 27]
+
+
+class Decoder_wUsers(nn.Module):
     def __init__(self, embed_size, hidden_size, output_size,
                  user_size,
                  n_layers=1, dropout=0.2):
-        super(Decoder, self).__init__()
+        super(Decoder_wUsers, self).__init__()
         self.embed_size = embed_size  # 256
         self.hidden_size = hidden_size  # 512
         self.output_size = output_size  # 10004
